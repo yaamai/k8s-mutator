@@ -1,131 +1,135 @@
 package main
 
 import (
+	"context"
+	"crypto/tls"
+	"flag"
+	"fmt"
+	"io/ioutil"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 
-	log "github.com/sirupsen/logrus"
-	api_v1 "k8s.io/api/core/v1"
-	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"encoding/json"
+	"github.com/golang/glog"
+	"k8s.io/api/admission/v1beta1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/watch"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/cache"
-	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/client-go/util/workqueue"
+	"k8s.io/apimachinery/pkg/runtime/serializer"
 )
 
-// retrieve the Kubernetes cluster client from outside of the cluster
-func getKubernetesClient() kubernetes.Interface {
-	// construct the path to resolve to `~/.kube/config`
-	kubeConfigPath := os.Getenv("KUBECONFIG")
-
-	// create the config from the path
-	config, err := clientcmd.BuildConfigFromFlags("", kubeConfigPath)
-	if err != nil {
-		log.Fatalf("getClusterConfig: %v", err)
-	}
-
-	// generate the client based off of the config
-	client, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		log.Fatalf("getClusterConfig: %v", err)
-	}
-
-	log.Info("Successfully constructed k8s client")
-	return client
+type MutateServer struct {
+	port         int
+	certFilePath string
+	keyFilePath  string
+	server       *http.Server
 }
 
-// main code path
-func main() {
-	// get the Kubernetes client for connectivity
-	client := getKubernetesClient()
-
-	// create the informer so that we can not only list resources
-	// but also watch them for all pods in the default namespace
-	informer := cache.NewSharedIndexInformer(
-		// the ListWatch contains two different functions that our
-		// informer requires: ListFunc to take care of listing and watching
-		// the resources we want to handle
-		&cache.ListWatch{
-			ListFunc: func(options meta_v1.ListOptions) (runtime.Object, error) {
-				// list all of the pods (core resource) in the deafult namespace
-				return client.CoreV1().Pods(meta_v1.NamespaceDefault).List(options)
-			},
-			WatchFunc: func(options meta_v1.ListOptions) (watch.Interface, error) {
-				// watch all of the pods (core resource) in the default namespace
-				return client.CoreV1().Pods(meta_v1.NamespaceDefault).Watch(options)
-			},
-		},
-		&api_v1.Pod{}, // the target type (Pod)
-		0,             // no resync (period of 0)
-		cache.Indexers{},
-	)
-
-	// create a new queue so that when the informer gets a resource that is either
-	// a result of listing or watching, we can add an idenfitying key to the queue
-	// so that it can be handled in the handler
-	queue := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
-
-	// add event handlers to handle the three types of events for resources:
-	//  - adding new resources
-	//  - updating existing resources
-	//  - deleting resources
-	informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: func(obj interface{}) {
-			// convert the resource object into a key (in this case
-			// we are just doing it in the format of 'namespace/name')
-			key, err := cache.MetaNamespaceKeyFunc(obj)
-			log.Infof("Add pod: %s", key)
-			if err == nil {
-				// add the key to the queue for the handler to get
-				queue.Add(key)
-			}
-		},
-		UpdateFunc: func(oldObj, newObj interface{}) {
-			key, err := cache.MetaNamespaceKeyFunc(newObj)
-			log.Infof("Update pod: %s", key)
-			if err == nil {
-				queue.Add(key)
-			}
-		},
-		DeleteFunc: func(obj interface{}) {
-			// DeletionHandlingMetaNamsespaceKeyFunc is a helper function that allows
-			// us to check the DeletedFinalStateUnknown existence in the event that
-			// a resource was deleted but it is still contained in the index
-			//
-			// this then in turn calls MetaNamespaceKeyFunc
-			key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
-			log.Infof("Delete pod: %s", key)
-			if err == nil {
-				queue.Add(key)
-			}
-		},
-	})
-
-	// construct the Controller object which has all of the necessary components to
-	// handle logging, connections, informing (listing and watching), the queue,
-	// and the handler
-	controller := Controller{
-		logger:    log.NewEntry(log.New()),
-		clientset: client,
-		informer:  informer,
-		queue:     queue,
-		handler:   &TestHandler{},
+func (s *MutateServer) InitServer() {
+	pair, err := tls.LoadX509KeyPair(s.certFilePath, s.keyFilePath)
+	if err != nil {
+		glog.Errorf("Failed to load key pair: %v", err)
 	}
 
-	// use a channel to synchronize the finalization for a graceful shutdown
-	stopCh := make(chan struct{})
-	defer close(stopCh)
+	s.server = &http.Server{
+		Addr:      fmt.Sprintf(":%v", s.port),
+		TLSConfig: &tls.Config{Certificates: []tls.Certificate{pair}},
+	}
+}
 
-	// run the controller loop to process items
-	go controller.Run(stopCh)
+var (
+	runtimeScheme = runtime.NewScheme()
+	codecs        = serializer.NewCodecFactory(runtimeScheme)
+	deserializer  = codecs.UniversalDeserializer()
+)
 
-	// use a channel to handle OS signals to terminate and gracefully shut
-	// down processing
-	sigTerm := make(chan os.Signal, 1)
-	signal.Notify(sigTerm, syscall.SIGTERM)
-	signal.Notify(sigTerm, syscall.SIGINT)
-	<-sigTerm
+func (s *MutateServer) handleMutate(w http.ResponseWriter, r *http.Request) {
+	glog.Error("handleMutate")
+	var body []byte
+	if r.Body != nil {
+		if data, err := ioutil.ReadAll(r.Body); err == nil {
+			body = data
+		}
+	}
+	if len(body) == 0 {
+		glog.Error("empty body")
+		http.Error(w, "empty body", http.StatusBadRequest)
+		return
+	}
+
+	// verify the content type is accurate
+	contentType := r.Header.Get("Content-Type")
+	if contentType != "application/json" {
+		glog.Errorf("Content-Type=%s, expect application/json", contentType)
+		http.Error(w, "invalid Content-Type, expect `application/json`", http.StatusUnsupportedMediaType)
+		return
+	}
+
+	ar := v1beta1.AdmissionReview{}
+	if _, _, err := deserializer.Decode(body, nil, &ar); err != nil {
+		glog.Errorf("Can't decode body: %v", err)
+	}
+
+	glog.Error(ar)
+
+	req := ar.Request
+	var pod corev1.Pod
+	if err := json.Unmarshal(req.Object.Raw, &pod); err != nil {
+		glog.Errorf("Could not unmarshal raw object: %v", err)
+	}
+	glog.Error(pod)
+
+	ar.Response = &v1beta1.AdmissionResponse{
+		Allowed: true,
+		Patch:   []byte(`[{"op": "replace", "path": "/spec/containers/0/image", "value": "nginx:1.2.3"}]`),
+		PatchType: func() *v1beta1.PatchType {
+			pt := v1beta1.PatchTypeJSONPatch
+			return &pt
+		}(),
+	}
+	ar.Response.UID = ar.Request.UID
+
+	resp, err := json.Marshal(ar)
+	if err != nil {
+		glog.Errorf("Can't encode response: %v", err)
+		http.Error(w, fmt.Sprintf("could not encode response: %v", err), http.StatusInternalServerError)
+	}
+	glog.Infof("Ready to write reponse ...")
+	if _, err := w.Write(resp); err != nil {
+		glog.Errorf("Can't write response: %v", err)
+		http.Error(w, fmt.Sprintf("could not write response: %v", err), http.StatusInternalServerError)
+	}
+
+}
+
+func (s *MutateServer) serve() error {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mutate", s.handleMutate)
+	s.server.Handler = mux
+
+	return s.server.ListenAndServeTLS("", "")
+}
+
+func main() {
+	var server MutateServer
+	flag.IntVar(&server.port, "port", 8443, "Webhook server port.")
+	flag.StringVar(&server.certFilePath, "tlsCertFile", "/etc/webhook/certs/cert.pem", "File containing the x509 Certificate for HTTPS.")
+	flag.StringVar(&server.keyFilePath, "tlsKeyFile", "/etc/webhook/certs/key.pem", "File containing the x509 private key to --tlsCertFile.")
+	flag.Parse()
+
+	go func() {
+		server.InitServer()
+		if err := server.serve(); err != nil {
+			glog.Errorf("Failed to listen and serve webhook server: %v", err)
+		}
+	}()
+
+	// listening OS shutdown singal
+	signalChan := make(chan os.Signal, 1)
+	signal.Notify(signalChan, syscall.SIGINT, syscall.SIGTERM)
+	<-signalChan
+
+	glog.Infof("Got OS shutdown signal, shutting down webhook server gracefully...")
+	server.server.Shutdown(context.Background())
 }
