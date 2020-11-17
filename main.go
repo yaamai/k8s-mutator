@@ -56,9 +56,9 @@ func parseMutateWebhook(r *http.Request) (*v1beta1.AdmissionReview, *corev1.Pod,
 }
 
 type MutateConfigPatch struct {
-	Op    string `json:"op"`
-	Path  string `json:"path"`
-	Value string `json:"value"`
+	Op    string      `json:"op"`
+	Path  string      `json:"path"`
+	Value interface{} `json:"value"`
 }
 
 type MutateConfig struct {

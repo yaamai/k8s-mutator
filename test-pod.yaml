@@ -5,7 +5,7 @@ metadata:
   name: mutate-nginx
 data:
   foobar: |
-    {"patch": [{"op": "replace", "path": "/spec/containers/0/image", "value": "nginx:v1.19"}]}
+    {"patch": [{"op": "add", "path": "/spec/initContainers", "value": [{"name": "foobar", "image": "alpine", "command": ["ash", "-c", "sleep 5"]}]}]}
 
 
 ---
