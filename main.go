@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -15,18 +16,115 @@ import (
 	"github.com/golang/glog"
 	"k8s.io/api/admission/v1beta1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/clientcmd"
 )
+
+func parseMutateWebhook(r *http.Request) (*v1beta1.AdmissionReview, *corev1.Pod, error) {
+
+	if r.Body == nil {
+		return nil, nil, errors.New("invalid request body")
+	}
+
+	body, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		return nil, nil, errors.New("request body read failed")
+	}
+
+	if len(body) == 0 {
+		return nil, nil, errors.New("empty request body")
+	}
+
+	if r.Header.Get("Content-Type") != "application/json" {
+		return nil, nil, errors.New("invalid content type")
+	}
+
+	admissionReview := v1beta1.AdmissionReview{}
+	if _, _, err := deserializer.Decode(body, nil, &admissionReview); err != nil {
+		return nil, nil, errors.New("failed to decode AdmissionReview")
+	}
+
+	var pod corev1.Pod
+	if err := json.Unmarshal(admissionReview.Request.Object.Raw, &pod); err != nil {
+		glog.Errorf("Could not unmarshal raw object: %v", err)
+	}
+
+	return &admissionReview, &pod, nil
+}
+
+type MutateConfigPatch struct {
+	Op    string `json:"op"`
+	Path  string `json:"path"`
+	Value string `json:"value"`
+}
+
+type MutateConfig struct {
+	Patch []MutateConfigPatch `json:"patch"`
+}
+
+func gatherMutateConfig(client kubernetes.Interface, configCondition string) ([]MutateConfig, error) {
+	// TODO: support more flexible targetCondition
+	//       ex.) labelSelect, multiple, [{"label": ""}], ["a", "b"]
+
+	configMap, err := client.CoreV1().ConfigMaps(corev1.NamespaceDefault).Get(configCondition, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+
+	configs := []MutateConfig{}
+	for _, value := range configMap.Data {
+		mc := MutateConfig{}
+		if err := json.Unmarshal([]byte(value), &mc); err != nil {
+			continue
+		}
+
+		configs = append(configs, mc)
+	}
+
+	return configs, nil
+}
+
+func isNeedMutation(pod *corev1.Pod) (string, error) {
+	value, ok := pod.Annotations["mutate.example.com/config"]
+	if !ok {
+		return "", nil
+	}
+
+	return value, nil
+}
+
+func getKubernetesClient() kubernetes.Interface {
+	// construct the path to resolve to `~/.kube/config`
+	kubeConfigPath := os.Getenv("KUBECONFIG")
+
+	// create the config from the path
+	config, err := clientcmd.BuildConfigFromFlags("", kubeConfigPath)
+	if err != nil {
+		glog.Errorf("getClusterConfig: %v", err)
+	}
+
+	// generate the client based off of the config
+	client, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		glog.Errorf("getClusterConfig: %v", err)
+	}
+
+	glog.Error("Successfully constructed k8s client")
+	return client
+}
 
 type MutateServer struct {
 	port         int
 	certFilePath string
 	keyFilePath  string
 	server       *http.Server
+	client       kubernetes.Interface
 }
 
-func (s *MutateServer) InitServer() {
+func (s *MutateServer) initServer() {
 	pair, err := tls.LoadX509KeyPair(s.certFilePath, s.keyFilePath)
 	if err != nil {
 		glog.Errorf("Failed to load key pair: %v", err)
@@ -36,6 +134,12 @@ func (s *MutateServer) InitServer() {
 		Addr:      fmt.Sprintf(":%v", s.port),
 		TLSConfig: &tls.Config{Certificates: []tls.Certificate{pair}},
 	}
+
+	s.client = getKubernetesClient()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mutate", s.handleMutate)
+	s.server.Handler = mux
 }
 
 var (
@@ -44,71 +148,96 @@ var (
 	deserializer  = codecs.UniversalDeserializer()
 )
 
-func (s *MutateServer) handleMutate(w http.ResponseWriter, r *http.Request) {
-	glog.Error("handleMutate")
-	var body []byte
-	if r.Body != nil {
-		if data, err := ioutil.ReadAll(r.Body); err == nil {
-			body = data
-		}
-	}
-	if len(body) == 0 {
-		glog.Error("empty body")
-		http.Error(w, "empty body", http.StatusBadRequest)
-		return
+func respJson(w http.ResponseWriter, data interface{}) {
+	resp, err := json.Marshal(data)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("could not encode response: %v", err), http.StatusInternalServerError)
 	}
 
-	// verify the content type is accurate
-	contentType := r.Header.Get("Content-Type")
-	if contentType != "application/json" {
-		glog.Errorf("Content-Type=%s, expect application/json", contentType)
-		http.Error(w, "invalid Content-Type, expect `application/json`", http.StatusUnsupportedMediaType)
-		return
+	if _, err := w.Write(resp); err != nil {
+		http.Error(w, fmt.Sprintf("could not write response: %v", err), http.StatusInternalServerError)
 	}
+}
 
-	ar := v1beta1.AdmissionReview{}
-	if _, _, err := deserializer.Decode(body, nil, &ar); err != nil {
-		glog.Errorf("Can't decode body: %v", err)
+func respErrorAdmissionReview(w http.ResponseWriter, admissionReview *v1beta1.AdmissionReview, err error) {
+	resp := &v1beta1.AdmissionResponse{
+		Result: &metav1.Status{
+			Message: err.Error(),
+		},
 	}
+	admissionReview.Response = resp
+	admissionReview.Response.UID = admissionReview.Request.UID
+	respJson(w, admissionReview)
+}
 
-	glog.Error(ar)
-
-	req := ar.Request
-	var pod corev1.Pod
-	if err := json.Unmarshal(req.Object.Raw, &pod); err != nil {
-		glog.Errorf("Could not unmarshal raw object: %v", err)
-	}
-	glog.Error(pod)
-
-	ar.Response = &v1beta1.AdmissionResponse{
+func respPassthroughAdmissionReview(w http.ResponseWriter, admissionReview *v1beta1.AdmissionReview, err error) {
+	resp := &v1beta1.AdmissionResponse{
 		Allowed: true,
-		Patch:   []byte(`[{"op": "replace", "path": "/spec/containers/0/image", "value": "nginx:1.2.3"}]`),
+	}
+	admissionReview.Response = resp
+	admissionReview.Response.UID = admissionReview.Request.UID
+	respJson(w, admissionReview)
+}
+
+func (s *MutateServer) handleMutate(w http.ResponseWriter, r *http.Request) {
+	admissionReview, pod, err := parseMutateWebhook(r)
+	if err != nil {
+		respErrorAdmissionReview(w, admissionReview, err)
+		return
+	}
+
+	configCondition, err := isNeedMutation(pod)
+	if err != nil {
+		respErrorAdmissionReview(w, admissionReview, err)
+		return
+	}
+	if configCondition == "" {
+		respPassthroughAdmissionReview(w, admissionReview, err)
+		return
+	}
+
+	configs, err := gatherMutateConfig(s.client, configCondition)
+	if err != nil {
+		respErrorAdmissionReview(w, admissionReview, err)
+		return
+	}
+
+	patches := []MutateConfigPatch{}
+	for _, val := range configs {
+		patches = append(patches, val.Patch...)
+	}
+	patchesBytes, err := json.Marshal(patches)
+	glog.Error("patch gathered", configs, patches, string(patchesBytes))
+
+	resp := &v1beta1.AdmissionResponse{
+		Allowed: true,
+		Patch:   patchesBytes,
 		PatchType: func() *v1beta1.PatchType {
 			pt := v1beta1.PatchTypeJSONPatch
 			return &pt
 		}(),
 	}
-	ar.Response.UID = ar.Request.UID
+	admissionReview.Response = resp
+	admissionReview.Response.UID = admissionReview.Request.UID
 
-	resp, err := json.Marshal(ar)
-	if err != nil {
-		glog.Errorf("Can't encode response: %v", err)
-		http.Error(w, fmt.Sprintf("could not encode response: %v", err), http.StatusInternalServerError)
-	}
-	glog.Infof("Ready to write reponse ...")
-	if _, err := w.Write(resp); err != nil {
-		glog.Errorf("Can't write response: %v", err)
-		http.Error(w, fmt.Sprintf("could not write response: %v", err), http.StatusInternalServerError)
-	}
-
+	respJson(w, admissionReview)
 }
 
 func (s *MutateServer) serve() error {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/mutate", s.handleMutate)
-	s.server.Handler = mux
+	s.initServer()
 
-	return s.server.ListenAndServeTLS("", "")
+	go func() {
+		if err := s.server.ListenAndServeTLS("", ""); err != nil {
+			glog.Errorf("Failed to listen and serve webhook server: %v", err)
+		}
+	}()
+
+	signalChan := make(chan os.Signal, 1)
+	signal.Notify(signalChan, syscall.SIGINT, syscall.SIGTERM)
+	<-signalChan
+
+	glog.Infof("Got OS shutdown signal, shutting down webhook server gracefully...")
+	return s.server.Shutdown(context.Background())
 }
 
 func main() {
@@ -118,18 +247,10 @@ func main() {
 	flag.StringVar(&server.keyFilePath, "tlsKeyFile", "/etc/webhook/certs/key.pem", "File containing the x509 private key to --tlsCertFile.")
 	flag.Parse()
 
-	go func() {
-		server.InitServer()
-		if err := server.serve(); err != nil {
-			glog.Errorf("Failed to listen and serve webhook server: %v", err)
-		}
-	}()
+	// client := getKubernetesClient()
+	// cms, err := client.CoreV1().ConfigMaps(corev1.NamespaceDefault).List(metav1.ListOptions{})
+	// cms, err := client.CoreV1().ConfigMaps("").List(metav1.ListOptions{})
+	// glog.Error(cms, err)
 
-	// listening OS shutdown singal
-	signalChan := make(chan os.Signal, 1)
-	signal.Notify(signalChan, syscall.SIGINT, syscall.SIGTERM)
-	<-signalChan
-
-	glog.Infof("Got OS shutdown signal, shutting down webhook server gracefully...")
-	server.server.Shutdown(context.Background())
+	server.serve()
 }

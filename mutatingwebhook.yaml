@@ -1,0 +1,23 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: mutation
+webhooks:
+- name: test-mutation.example.com
+  clientConfig:
+    url: https://192.168.200.254:8443/mutate
+#    service:
+#      name: sidecar-injector-webhook-svc
+#      namespace: sidecar-injector
+#      path: "/mutate"
+#    caBundle: "ZHVtbXk="
+  rules:
+  - operations: ["CREATE", "UPDATE"]
+    apiGroups: [""]
+    apiVersions: ["v1"]
+    resources: ["pods"]
+  sideEffects: None
+  admissionReviewVersions: ["v1", "v1beta1"]
+#  namespaceSelector:
+#    matchLabels:
+#      sidecar-injection: enabled
