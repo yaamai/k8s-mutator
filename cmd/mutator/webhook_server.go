@@ -28,6 +28,7 @@ func (s *MutateServer) handleMutate(w http.ResponseWriter, r *http.Request) {
 		respErrorAdmissionReview(w, admissionReview, err)
 		return
 	}
+	reqLogger := log.With().Str("name", pod.Name).Str("namespace", pod.Namespace).Logger()
 
 	configCondition, err := isNeedMutation(pod)
 	if err != nil {
@@ -35,6 +36,7 @@ func (s *MutateServer) handleMutate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if configCondition == "" {
+		reqLogger.Debug().Msg("skip not annotated pod")
 		respPassthroughAdmissionReview(w, admissionReview, err)
 		return
 	}
@@ -48,7 +50,7 @@ func (s *MutateServer) handleMutate(w http.ResponseWriter, r *http.Request) {
 	patches := configs.GetJsonPatchSet()
 	patches.AddNonExistentPathPatch(pod)
 	patchesBytes, err := json.Marshal(patches)
-	log.Debug().Str("patch", string(patchesBytes)).Msg("Patch generated")
+	reqLogger.Info().RawJSON("patch", patchesBytes).Msg("patched")
 
 	resp := &v1beta1.AdmissionResponse{
 		Allowed: true,

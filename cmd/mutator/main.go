@@ -28,13 +28,13 @@ func main() {
 
 	client, err := getKubernetesClient(*kubeconfig)
 	if err != nil {
-		log.Error().Str("err", err.Error()).Msg("cannot construct kubernetes client")
+		log.Error().Err(err).Msg("cannot construct kubernetes client")
 	}
 	server.client = client
 	log.Info().Msg("connected to kubernetes")
 
 	err = server.serve()
 	if err != nil {
-		log.Error().Str("err", err.Error()).Msg("cannot start server")
+		log.Error().Err(err).Msg("cannot start server")
 	}
 }
