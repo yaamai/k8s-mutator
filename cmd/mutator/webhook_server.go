@@ -45,7 +45,8 @@ func (s *MutateServer) handleMutate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	patches := AddNonExistentPathPatch(configs.GetPatch(), pod)
+	patches := configs.GetJsonPatchSet()
+	patches.AddNonExistentPathPatch(pod)
 	patchesBytes, err := json.Marshal(patches)
 	log.Debug().Str("patch", string(patchesBytes)).Msg("Patch generated")
 
@@ -72,7 +73,11 @@ func (s *MutateServer) initServer() error {
 		TLSConfig: &tls.Config{Certificates: []tls.Certificate{pair}},
 	}
 
-	s.client = getKubernetesClient()
+	client, err := getKubernetesClient()
+	if err != nil {
+		return err
+	}
+	s.client = client
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mutate", s.handleMutate)

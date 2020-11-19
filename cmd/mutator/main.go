@@ -17,5 +17,8 @@ func main() {
 	flag.StringVar(&server.keyFilePath, "tlsKeyFile", "/etc/certs/key.pem", "TLS key file path")
 	flag.Parse()
 
-	server.serve()
+	err := server.serve()
+	if err != nil {
+		log.Error().Str("err", err.Error()).Msg("cannot start server")
+	}
 }

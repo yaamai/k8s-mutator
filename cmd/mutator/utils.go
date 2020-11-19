@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/golang/glog"
 	"io/ioutil"
 	"k8s.io/api/admission/v1beta1"
 	corev1 "k8s.io/api/core/v1"
@@ -15,6 +14,10 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"net/http"
 	"os"
+)
+
+const (
+	ConfigAnnotation = "mutate.example.com/config"
 )
 
 var (
@@ -49,29 +52,14 @@ func parseMutateWebhook(r *http.Request) (*v1beta1.AdmissionReview, *corev1.Pod,
 
 	var pod corev1.Pod
 	if err := json.Unmarshal(admissionReview.Request.Object.Raw, &pod); err != nil {
-		glog.Errorf("Could not unmarshal raw object: %v", err)
+		return nil, nil, err
 	}
 
 	return &admissionReview, &pod, nil
 }
 
-func AddNonExistentPathPatch(patches []JsonPatch, pod *corev1.Pod) []JsonPatch {
-	if pod.Spec.InitContainers == nil && hasPatchByPathPrefix(patches, "/spec/initContainers/") {
-		glog.Error("Found non existent path patch")
-		patches = append([]JsonPatch{JsonPatch{Op: "add", Path: "/spec/initContainers", Value: []interface{}{}}}, patches...)
-	}
-	if pod.Spec.Containers == nil && hasPatchByPathPrefix(patches, "/spec/containers/") {
-		patches = append([]JsonPatch{JsonPatch{Op: "add", Path: "/spec/containers", Value: []interface{}{}}}, patches...)
-	}
-	if pod.Spec.Volumes == nil && hasPatchByPathPrefix(patches, "/spec/volumes/") {
-		patches = append([]JsonPatch{JsonPatch{Op: "add", Path: "/spec/volumes", Value: []interface{}{}}}, patches...)
-	}
-
-	return patches
-}
-
 func isNeedMutation(pod *corev1.Pod) (string, error) {
-	value, ok := pod.Annotations["mutate.example.com/config"]
+	value, ok := pod.Annotations[ConfigAnnotation]
 	if !ok {
 		return "", nil
 	}
@@ -79,24 +67,20 @@ func isNeedMutation(pod *corev1.Pod) (string, error) {
 	return value, nil
 }
 
-func getKubernetesClient() kubernetes.Interface {
-	// construct the path to resolve to `~/.kube/config`
+func getKubernetesClient() (kubernetes.Interface, error) {
 	kubeConfigPath := os.Getenv("KUBECONFIG")
 
-	// create the config from the path
 	config, err := clientcmd.BuildConfigFromFlags("", kubeConfigPath)
 	if err != nil {
-		glog.Errorf("getClusterConfig: %v", err)
+		return nil, err
 	}
 
-	// generate the client based off of the config
 	client, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		glog.Errorf("getClusterConfig: %v", err)
+		return nil, err
 	}
 
-	glog.Error("Successfully constructed k8s client")
-	return client
+	return client, nil
 }
 
 func respJson(w http.ResponseWriter, data interface{}) {
