@@ -1,3 +1,6 @@
 home/
 k3s.yaml
 .*sw*
+go/
+*.pem
+vendor
