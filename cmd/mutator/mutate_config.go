@@ -14,9 +14,60 @@ type JsonPatch struct {
 	Value interface{} `json:"value" yaml:"value"`
 }
 
+type JsonPatchSet []JsonPatch
+
+func (s JsonPatchSet) HasPrefix(pathPrefix string) bool {
+	for _, p := range s {
+		if strings.HasPrefix(p.Path, pathPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *JsonPatchSet) Prepend(p JsonPatch) {
+	*s = append(*s, JsonPatch{})
+	copy((*s)[1:], *s)
+	(*s)[0] = p
+}
+
+func (s *JsonPatchSet) AddNonExistentPathPatch(pod *corev1.Pod) {
+	if pod.Spec.InitContainers == nil && (s.HasPrefix("/spec/initContainers/")) {
+		s.Prepend(JsonPatch{Op: "add", Path: "/spec/initContainers", Value: []interface{}{}})
+	}
+	if pod.Spec.Containers == nil && s.HasPrefix("/spec/containers/") {
+		s.Prepend(JsonPatch{Op: "add", Path: "/spec/containers", Value: []interface{}{}})
+	}
+	if pod.Spec.Volumes == nil && s.HasPrefix("/spec/volumes/") {
+		s.Prepend(JsonPatch{Op: "add", Path: "/spec/volumes", Value: []interface{}{}})
+	}
+}
+
 type PatchBase struct {
 	Op    string `json:"op" yaml:"op"`
 	Index string `json:"index" yaml:"index"`
+}
+
+func (p PatchBase) Expand(pathBase string, v interface{}) JsonPatch {
+	path := pathBase
+	index := "-"
+	if p.Index != "" {
+		index = p.Index
+	}
+	path = path + index
+
+	op := "add"
+	if p.Op != "" {
+		op = p.Op
+	}
+
+	var val interface{}
+	val = v
+	if op == "remove" {
+		val = nil
+	}
+
+	return JsonPatch{Op: op, Path: path, Value: val}
 }
 
 type ContainerPatch struct {
@@ -37,41 +88,19 @@ type MutateConfig struct {
 	Volumes        []VolumePatch    `json:"volumes" yaml:"volumes"`
 }
 
-func getDefaultedPatch(b PatchBase, p string, v interface{}) JsonPatch {
-	path := p
-	index := "-"
-	if b.Index != "" {
-		index = b.Index
-	}
-	path = path + index
-
-	op := "add"
-	if b.Op != "" {
-		op = b.Op
-	}
-
-	var val interface{}
-	val = v
-	if op == "remove" {
-		val = nil
-	}
-
-	return JsonPatch{Op: op, Path: path, Value: val}
-}
-
-func (c MutateConfig) GetPatch() []JsonPatch {
-	patches := []JsonPatch{}
+func (c MutateConfig) GetJsonPatchSet() JsonPatchSet {
+	patches := JsonPatchSet{}
 
 	for _, v := range c.Containers {
-		patches = append(patches, getDefaultedPatch(v.PatchBase, "/spec/containers/", v.Container))
+		patches = append(patches, v.PatchBase.Expand("/spec/containers/", v.Container))
 	}
 
 	for _, v := range c.InitContainers {
-		patches = append(patches, getDefaultedPatch(v.PatchBase, "/spec/initContainers/", v.Container))
+		patches = append(patches, v.PatchBase.Expand("/spec/initContainers/", v.Container))
 	}
 
 	for _, v := range c.Volumes {
-		patches = append(patches, getDefaultedPatch(v.PatchBase, "/spec/volumes/", v.Volume))
+		patches = append(patches, v.PatchBase.Expand("/spec/volumes/", v.Volume))
 	}
 
 	patches = append(patches, c.Patches...)
@@ -104,20 +133,11 @@ func NewMutateConfigListFromKubernetes(client kubernetes.Interface, configCondit
 
 }
 
-func (c MuteateConfigList) GetPatch() []JsonPatch {
-	patches := []JsonPatch{}
+func (c MuteateConfigList) GetJsonPatchSet() JsonPatchSet {
+	patches := JsonPatchSet{}
 	for _, val := range c {
-		patches = append(patches, val.GetPatch()...)
+		patches = append(patches, val.GetJsonPatchSet()...)
 	}
 
 	return patches
-}
-
-func hasPatchByPathPrefix(patches []JsonPatch, pathPrefix string) bool {
-	for _, p := range patches {
-		if strings.HasPrefix(p.Path, pathPrefix) {
-			return true
-		}
-	}
-	return false
 }
