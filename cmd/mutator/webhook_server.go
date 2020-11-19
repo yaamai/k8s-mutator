@@ -25,7 +25,11 @@ type MutateServer struct {
 func (s *MutateServer) handleMutate(w http.ResponseWriter, r *http.Request) {
 	admissionReview, pod, err := parseMutateWebhook(r)
 	if err != nil {
-		respErrorAdmissionReview(w, admissionReview, err)
+		if admissionReview != nil {
+			respErrorAdmissionReview(w, admissionReview, err)
+		} else {
+			http.Error(w, fmt.Sprintf("could not encode response: %v", err), http.StatusInternalServerError)
+		}
 		return
 	}
 	reqLogger := log.With().Str("name", pod.Name).Str("namespace", pod.Namespace).Logger()
