@@ -15,8 +15,8 @@ func main() {
 
 	var server MutateServer
 	flag.IntVar(&server.port, "port", 8443, "Webhook server port.")
-	flag.StringVar(&server.certFilePath, "tlsCertFile", "/etc/certs/cert.pem", "TLS certificate file path")
-	flag.StringVar(&server.keyFilePath, "tlsKeyFile", "/etc/certs/key.pem", "TLS key file path")
+	flag.StringVar(&server.certFilePath, "tlsCertFile", "/etc/certs/cert", "TLS certificate file path")
+	flag.StringVar(&server.keyFilePath, "tlsKeyFile", "/etc/certs/key", "TLS key file path")
 
 	var kubeconfig *string
 	if home := homedir.HomeDir(); home != "" {
