@@ -4,7 +4,9 @@ import (
 	"flag"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	"k8s.io/client-go/util/homedir"
 	"os"
+	"path/filepath"
 )
 
 func main() {
@@ -15,9 +17,23 @@ func main() {
 	flag.IntVar(&server.port, "port", 8443, "Webhook server port.")
 	flag.StringVar(&server.certFilePath, "tlsCertFile", "/etc/certs/cert.pem", "TLS certificate file path")
 	flag.StringVar(&server.keyFilePath, "tlsKeyFile", "/etc/certs/key.pem", "TLS key file path")
+
+	var kubeconfig *string
+	if home := homedir.HomeDir(); home != "" {
+		kubeconfig = flag.String("kubeconfig", filepath.Join(home, ".kube", "config"), "(optional) absolute path to the kubeconfig file")
+	} else {
+		kubeconfig = flag.String("kubeconfig", os.Getenv("KUBECONFIG"), "absolute path to the kubeconfig file")
+	}
 	flag.Parse()
 
-	err := server.serve()
+	client, err := getKubernetesClient(*kubeconfig)
+	if err != nil {
+		log.Error().Str("err", err.Error()).Msg("cannot construct kubernetes client")
+	}
+	server.client = client
+	log.Info().Msg("connected to kubernetes")
+
+	err = server.serve()
 	if err != nil {
 		log.Error().Str("err", err.Error()).Msg("cannot start server")
 	}

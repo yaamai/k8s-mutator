@@ -73,12 +73,6 @@ func (s *MutateServer) initServer() error {
 		TLSConfig: &tls.Config{Certificates: []tls.Certificate{pair}},
 	}
 
-	client, err := getKubernetesClient()
-	if err != nil {
-		return err
-	}
-	s.client = client
-
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mutate", s.handleMutate)
 	s.server.Handler = mux

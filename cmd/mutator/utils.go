@@ -11,9 +11,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"net/http"
-	"os"
 )
 
 const (
@@ -67,12 +67,21 @@ func isNeedMutation(pod *corev1.Pod) (string, error) {
 	return value, nil
 }
 
-func getKubernetesClient() (kubernetes.Interface, error) {
-	kubeConfigPath := os.Getenv("KUBECONFIG")
-
-	config, err := clientcmd.BuildConfigFromFlags("", kubeConfigPath)
-	if err != nil {
-		return nil, err
+func getKubernetesClient(kubeConfigPath string) (kubernetes.Interface, error) {
+	var (
+		config *rest.Config
+		err    error
+	)
+	if kubeConfigPath != "" {
+		config, err = clientcmd.BuildConfigFromFlags("", kubeConfigPath)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		config, err = rest.InClusterConfig()
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	client, err := kubernetes.NewForConfig(config)
