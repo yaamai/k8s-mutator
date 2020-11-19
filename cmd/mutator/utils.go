@@ -2,8 +2,8 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
+	"github.com/pkg/errors"
 	"io/ioutil"
 	"k8s.io/api/admission/v1beta1"
 	corev1 "k8s.io/api/core/v1"
@@ -68,20 +68,14 @@ func isNeedMutation(pod *corev1.Pod) (string, error) {
 }
 
 func getKubernetesClient(kubeConfigPath string) (kubernetes.Interface, error) {
-	var (
-		config *rest.Config
-		err    error
-	)
-	if kubeConfigPath != "" {
-		config, err = clientcmd.BuildConfigFromFlags("", kubeConfigPath)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		config, err = rest.InClusterConfig()
-		if err != nil {
-			return nil, err
-		}
+	config, err1 := rest.InClusterConfig()
+	if err1 != nil && kubeConfigPath == "" {
+		return nil, errors.Wrap(err1, "kubeconfig path not specified")
+	}
+
+	config, err := clientcmd.BuildConfigFromFlags("", kubeConfigPath)
+	if err != nil {
+		return nil, errors.Wrap(err1, err.Error())
 	}
 
 	client, err := kubernetes.NewForConfig(config)

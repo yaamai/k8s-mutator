@@ -16,7 +16,7 @@ require (
 	github.com/json-iterator/go v1.1.10 // indirect
 	github.com/kr/pretty v0.2.0 // indirect
 	github.com/onsi/ginkgo v1.11.0 // indirect
-	github.com/pkg/errors v0.9.1 // indirect
+	github.com/pkg/errors v0.9.1
 	github.com/rs/zerolog v1.20.0
 	github.com/sirupsen/logrus v1.7.0
 	github.com/stretchr/testify v1.4.0
