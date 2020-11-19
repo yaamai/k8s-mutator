@@ -5,7 +5,12 @@ metadata:
   name: mutate-nginx
 data:
   foobar: |
-    {"initContainers": [{"name": "foobar", "image": "alpine", "command": ["ash", "-c", "sleep 3"]}]}
+    initContainers:
+    - name: foobar
+      image: alpine
+      command: ["ash", "-c", "sleep 3"]
+  #  foobar: |
+  #    {"initContainers": [{"name": "foobar", "image": "alpine", "command": ["ash", "-c", "sleep 3"]}]}
   #  foobar: |
   #    {"containers": [{"name": "foobar", "image": "alpine", "command": ["ash", "-c", "sleep 30"]}]}
   #  foobar: |

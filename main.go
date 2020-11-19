@@ -3,18 +3,13 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
-	"io/ioutil"
-	"net/http"
-	"os"
-	"os/signal"
-	"strings"
-	"syscall"
-
-	"encoding/json"
+	"github.com/goccy/go-yaml"
 	"github.com/golang/glog"
+	"io/ioutil"
 	"k8s.io/api/admission/v1beta1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -22,6 +17,11 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
+	"net/http"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
 )
 
 func parseMutateWebhook(r *http.Request) (*v1beta1.AdmissionReview, *corev1.Pod, error) {
@@ -57,32 +57,32 @@ func parseMutateWebhook(r *http.Request) (*v1beta1.AdmissionReview, *corev1.Pod,
 }
 
 type MutateConfigPatch struct {
-	Op    string      `json:"op"`
-	Path  string      `json:"path"`
-	Value interface{} `json:"value"`
+	Op    string      `json:"op" yaml:"op"`
+	Path  string      `json:"path" yaml:"path"`
+	Value interface{} `json:"value" yaml:"value"`
 }
 
 type PatchBase struct {
-	Op    string `json:"op"`
-	Index string `json:"index"`
+	Op    string `json:"op" yaml:"op"`
+	Index string `json:"index" yaml:"index"`
 }
 
 type ContainerPatch struct {
-	corev1.Container
-	PatchBase
+	corev1.Container `json:",inline" yaml:",inline"`
+	PatchBase        `json:",inline" yaml:",inline"`
 }
 
 type VolumePatch struct {
-	corev1.Volume
-	PatchBase
+	corev1.Volume `json:",inline" yaml:",inline"`
+	PatchBase     `json:",inline" yaml:",inline"`
 }
 
 type MutateConfig struct {
-	Name           string              `json:"name"`
-	Patches        []MutateConfigPatch `json:"patch"`
-	Containers     []ContainerPatch    `json:"containers"`
-	InitContainers []ContainerPatch    `json:"initContainers"`
-	Volumes        []VolumePatch       `json:"volumes"`
+	Name           string              `json:"name" yaml:"name"`
+	Patches        []MutateConfigPatch `json:"patch" yaml:"patch"`
+	Containers     []ContainerPatch    `json:"containers" yaml:"containers"`
+	InitContainers []ContainerPatch    `json:"initContainers" yaml:"initContainers"`
+	Volumes        []VolumePatch       `json:"volumes" yaml:"volumes"`
 }
 
 func getDefaultedPatch(b PatchBase, p string, v interface{}) MutateConfigPatch {
@@ -141,7 +141,7 @@ func NewMutateConfigListFromKubernetes(client kubernetes.Interface, configCondit
 	configs := []MutateConfig{}
 	for key, value := range configMap.Data {
 		mc := MutateConfig{Name: key}
-		if err := json.Unmarshal([]byte(value), &mc); err != nil {
+		if err := yaml.Unmarshal([]byte(value), &mc); err != nil {
 			continue
 		}
 
