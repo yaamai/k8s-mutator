@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"encoding/json"
@@ -160,6 +161,30 @@ func (c MuteateConfigList) GetPatch() []MutateConfigPatch {
 	return patches
 }
 
+func hasPatchByPathPrefix(patches []MutateConfigPatch, pathPrefix string) bool {
+	for _, p := range patches {
+		if strings.HasPrefix(p.Path, pathPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func AddNonExistentPathPatch(patches []MutateConfigPatch, pod *corev1.Pod) []MutateConfigPatch {
+	if pod.Spec.InitContainers == nil && hasPatchByPathPrefix(patches, "/spec/initContainers/") {
+		glog.Error("Found non existent path patch")
+		patches = append([]MutateConfigPatch{MutateConfigPatch{Op: "add", Path: "/spec/initContainers", Value: []interface{}{}}}, patches...)
+	}
+	if pod.Spec.Containers == nil && hasPatchByPathPrefix(patches, "/spec/containers/") {
+		patches = append([]MutateConfigPatch{MutateConfigPatch{Op: "add", Path: "/spec/containers", Value: []interface{}{}}}, patches...)
+	}
+	if pod.Spec.Volumes == nil && hasPatchByPathPrefix(patches, "/spec/volumes/") {
+		patches = append([]MutateConfigPatch{MutateConfigPatch{Op: "add", Path: "/spec/volumes", Value: []interface{}{}}}, patches...)
+	}
+
+	return patches
+}
+
 func isNeedMutation(pod *corev1.Pod) (string, error) {
 	value, ok := pod.Annotations["mutate.example.com/config"]
 	if !ok {
@@ -276,6 +301,7 @@ func (s *MutateServer) handleMutate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	patches := configs.GetPatch()
+	patches = AddNonExistentPathPatch(patches, pod)
 	patchesBytes, err := json.Marshal(patches)
 	glog.Error("patch gathered", configs, patches, string(patchesBytes))
 
