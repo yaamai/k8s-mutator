@@ -61,11 +61,74 @@ type MutateConfigPatch struct {
 	Value interface{} `json:"value"`
 }
 
-type MutateConfig struct {
-	Patch []MutateConfigPatch `json:"patch"`
+type PatchBase struct {
+	Op    string `json:"op"`
+	Index string `json:"index"`
 }
 
-func gatherMutateConfig(client kubernetes.Interface, configCondition string) ([]MutateConfig, error) {
+type ContainerPatch struct {
+	corev1.Container
+	PatchBase
+}
+
+type VolumePatch struct {
+	corev1.Volume
+	PatchBase
+}
+
+type MutateConfig struct {
+	Name           string              `json:"name"`
+	Patches        []MutateConfigPatch `json:"patch"`
+	Containers     []ContainerPatch    `json:"containers"`
+	InitContainers []ContainerPatch    `json:"initContainers"`
+	Volumes        []VolumePatch       `json:"volumes"`
+}
+
+func getDefaultedPatch(b PatchBase, p string, v interface{}) MutateConfigPatch {
+	path := p
+	index := "-"
+	if b.Index != "" {
+		index = b.Index
+	}
+	path = path + index
+
+	op := "add"
+	if b.Op != "" {
+		op = b.Op
+	}
+
+	var val interface{}
+	val = v
+	if op == "remove" {
+		val = nil
+	}
+
+	return MutateConfigPatch{Op: op, Path: path, Value: val}
+}
+
+func (c MutateConfig) GetPatch() []MutateConfigPatch {
+	patches := []MutateConfigPatch{}
+
+	for _, v := range c.Containers {
+		patches = append(patches, getDefaultedPatch(v.PatchBase, "/spec/containers/", v.Container))
+	}
+
+	for _, v := range c.InitContainers {
+		patches = append(patches, getDefaultedPatch(v.PatchBase, "/spec/initContainers/", v.Container))
+	}
+
+	for _, v := range c.Volumes {
+		patches = append(patches, getDefaultedPatch(v.PatchBase, "/spec/volumes/", v.Volume))
+	}
+
+	patches = append(patches, c.Patches...)
+
+	return patches
+}
+
+type MuteateConfigList []MutateConfig
+
+func NewMutateConfigListFromKubernetes(client kubernetes.Interface, configCondition string) (MuteateConfigList, error) {
 	// TODO: support more flexible targetCondition
 	//       ex.) labelSelect, multiple, [{"label": ""}], ["a", "b"]
 
@@ -75,8 +138,8 @@ func gatherMutateConfig(client kubernetes.Interface, configCondition string) ([]
 	}
 
 	configs := []MutateConfig{}
-	for _, value := range configMap.Data {
-		mc := MutateConfig{}
+	for key, value := range configMap.Data {
+		mc := MutateConfig{Name: key}
 		if err := json.Unmarshal([]byte(value), &mc); err != nil {
 			continue
 		}
@@ -85,6 +148,16 @@ func gatherMutateConfig(client kubernetes.Interface, configCondition string) ([]
 	}
 
 	return configs, nil
+
+}
+
+func (c MuteateConfigList) GetPatch() []MutateConfigPatch {
+	patches := []MutateConfigPatch{}
+	for _, val := range c {
+		patches = append(patches, val.GetPatch()...)
+	}
+
+	return patches
 }
 
 func isNeedMutation(pod *corev1.Pod) (string, error) {
@@ -196,16 +269,13 @@ func (s *MutateServer) handleMutate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	configs, err := gatherMutateConfig(s.client, configCondition)
+	configs, err := NewMutateConfigListFromKubernetes(s.client, configCondition)
 	if err != nil {
 		respErrorAdmissionReview(w, admissionReview, err)
 		return
 	}
 
-	patches := []MutateConfigPatch{}
-	for _, val := range configs {
-		patches = append(patches, val.Patch...)
-	}
+	patches := configs.GetPatch()
 	patchesBytes, err := json.Marshal(patches)
 	glog.Error("patch gathered", configs, patches, string(patchesBytes))
 
