@@ -4,3 +4,4 @@ k3s.yaml
 go/
 *.pem
 vendor
+mutator
