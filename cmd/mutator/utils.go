@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/pkg/errors"
+	"github.com/rs/zerolog/log"
 	"io/ioutil"
 	"k8s.io/api/admission/v1beta1"
 	corev1 "k8s.io/api/core/v1"
@@ -68,22 +69,23 @@ func isNeedMutation(pod *corev1.Pod) (string, error) {
 }
 
 func getKubernetesClient(kubeConfigPath string) (kubernetes.Interface, error) {
-	config, err1 := rest.InClusterConfig()
-	if err1 != nil && kubeConfigPath == "" {
-		return nil, errors.Wrap(err1, "kubeconfig path not specified")
+	if config, err := rest.InClusterConfig(); err == nil {
+		client, err := kubernetes.NewForConfig(config)
+		if err == nil {
+			return client, nil
+		}
+		log.Debug().Err(err).Msg("failed to init kubernetes from in-cluster config")
 	}
 
-	config, err := clientcmd.BuildConfigFromFlags("", kubeConfigPath)
-	if err != nil {
-		return nil, errors.Wrap(err1, err.Error())
+	if config, err := clientcmd.BuildConfigFromFlags("", kubeConfigPath); err == nil {
+		client, err := kubernetes.NewForConfig(config)
+		if err == nil {
+			return client, nil
+		}
+		log.Debug().Err(err).Msg("failed to init kubernetes from kubeconfig")
 	}
 
-	client, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		return nil, err
-	}
-
-	return client, nil
+	return nil, errors.New("failed to get kubernetes client")
 }
 
 func respJson(w http.ResponseWriter, data interface{}) {

@@ -68,7 +68,7 @@ func (s *MutateServer) handleMutate(w http.ResponseWriter, r *http.Request) {
 	respAdmissionReview(w, admissionReview, resp)
 }
 
-func (s *MutateServer) initServer() error {
+func (s *MutateServer) initServer(kubeconfig *string) error {
 	pair, err := tls.LoadX509KeyPair(s.certFilePath, s.keyFilePath)
 	if err != nil {
 		return err
@@ -83,11 +83,17 @@ func (s *MutateServer) initServer() error {
 	mux.HandleFunc("/mutate", s.handleMutate)
 	s.server.Handler = mux
 
+	client, err := getKubernetesClient(*kubeconfig)
+	if err != nil {
+		return err
+	}
+	s.client = client
+
 	return nil
 }
 
-func (s *MutateServer) serve() error {
-	if err := s.initServer(); err != nil {
+func (s *MutateServer) serve(kubeconfig *string) error {
+	if err := s.initServer(kubeconfig); err != nil {
 		return err
 	}
 

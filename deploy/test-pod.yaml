@@ -24,6 +24,7 @@ metadata:
   annotations:
     mutate.example.com/config: "mutate-nginx"
   labels:
+    mutate.example.com/enable: "true"
     run: nginx
   name: nginx
 spec:

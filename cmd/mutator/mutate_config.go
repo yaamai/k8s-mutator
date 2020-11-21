@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"github.com/goccy/go-yaml"
+	"github.com/rs/zerolog/log"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -114,6 +116,7 @@ func NewMutateConfigListFromKubernetes(client kubernetes.Interface, configCondit
 	// TODO: support more flexible targetCondition
 	//       ex.) labelSelect, multiple, [{"label": ""}], ["a", "b"]
 
+	log.Debug().Str("client", fmt.Sprintf("%v", client)).Msg("Retrieving config")
 	configMap, err := client.CoreV1().ConfigMaps(corev1.NamespaceDefault).Get(configCondition, metav1.GetOptions{})
 	if err != nil {
 		return nil, err

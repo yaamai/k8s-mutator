@@ -1,0 +1,167 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mutator
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mutator
+  namespace: mutator
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mutator
+rules:
+- apiGroups:
+  - admissionregistration.k8s.io
+  resources:
+  - validatingwebhookconfigurations
+  - mutatingwebhookconfigurations
+  verbs:
+  - get
+  - create
+  - update
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - list
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mutator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: mutator
+subjects:
+- kind: ServiceAccount
+  name: mutator
+  namespace: mutator
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  creationTimestamp: null
+  name: mutator
+  namespace: mutator
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+  - create
+
+---
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: mutator
+  namespace: mutator
+subjects:
+- kind: ServiceAccount
+  name: mutator
+  apiGroup: ""
+roleRef:
+  kind: Role
+  name: mutator
+  apiGroup: ""
+
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: mutator
+webhooks:
+- name: mutator.example.com
+  clientConfig:
+    service:
+      name: mutator
+      namespace: mutator
+      path: "/mutate"
+#    caBundle: "ZHVtbXk="
+  rules:
+  - operations: ["CREATE", "UPDATE"]
+    apiGroups: [""]
+    apiVersions: ["v1"]
+    resources: ["pods"]
+  sideEffects: None
+  admissionReviewVersions: ["v1", "v1beta1"]
+  objectSelector:
+    matchExpressions:
+    - {key: "mutate.example.com/enable", operator: "Exists"}
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  creationTimestamp: null
+  labels:
+    app: mutator
+  name: mutator
+  namespace: mutator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mutator
+  strategy: {}
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: mutator
+    spec:
+      serviceAccountName: mutator
+      initContainers:
+      - name: certgen-create
+        image: docker.io/jettech/kube-webhook-certgen:v1.5.0
+        command: [/kube-webhook-certgen, create, --namespace, mutator, --host, "mutator.mutator.svc", --secret-name, mutator-cert]
+      - name: certgen-patch
+        image: docker.io/jettech/kube-webhook-certgen:v1.5.0
+        command: [/kube-webhook-certgen, patch, --namespace, mutator, --secret-name, mutator-cert, --webhook-name, mutator, --patch-validating=false]
+      containers:
+      - name: mutator
+        image: docker.io/yaamai/mutator:latest
+        ports:
+        - containerPort: 8443
+        volumeMounts:
+        - name: certs
+          mountPath: "/etc/certs"
+          readOnly: true
+      volumes:
+      - name: certs
+        secret:
+          secretName: mutator-cert
+          optional: true
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  creationTimestamp: null
+  labels:
+    app: mutator
+  name: mutator
+  namespace: mutator
+spec:
+  ports:
+  - name: webhook
+    port: 443
+    protocol: TCP
+    targetPort: 8443
+  selector:
+    app: mutator
+  type: ClusterIP
